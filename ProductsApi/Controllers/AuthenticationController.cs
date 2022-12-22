@@ -50,7 +50,7 @@ public class AuthController : ControllerBase
 	[ProducesResponseType(StatusCodes.Status400BadRequest, Type = typeof(ValidationProblemDetails))]
 	public async Task<IActionResult> Register(RegisterReqDto registerReqDto)
 	{
-		registerReqDto.Email = registerReqDto.Email.ToLower();
+		registerReqDto.Email = registerReqDto.Email.ToLower(System.Globalization.CultureInfo.CurrentCulture);
 		if (await _userManager.FindByEmailAsync(registerReqDto.Email) != null)
 		{
 			return CustomBadRequest(nameof(registerReqDto.Email), new List<string>() { "Email already exists" });
@@ -59,20 +59,20 @@ public class AuthController : ControllerBase
 		if (await _userManager.FindByNameAsync(registerReqDto.UserName) != null)
 			return CustomBadRequest(nameof(registerReqDto.UserName), new List<string>() { "Username already exists" });
 
-		var userToCreate = new User
+		User userToCreate = new()
 		{
 			Email = registerReqDto.Email,
 			UserName = registerReqDto.UserName,
 			RoleName = registerReqDto.RoleName
 		};
-		var result = await _userManager.CreateAsync(userToCreate, registerReqDto.Password);
+		IdentityResult result = await _userManager.CreateAsync(userToCreate, registerReqDto.Password);
 		if (result.Succeeded)
 		{
 			// add user to role if it exists in roles array
-			var role = _roles.Find(r => r.Name == registerReqDto.RoleName);
+			RoleConfig? role = _roles.Find(r => r.Name == registerReqDto.RoleName);
 			if (role != null)
 			{
-				await _userManager.AddToRoleAsync(userToCreate, role.Name);
+				_ = await _userManager.AddToRoleAsync(userToCreate, role.Name);
 			}
 			return StatusCode(201);
 		}
@@ -85,11 +85,11 @@ public class AuthController : ControllerBase
 	[ProducesResponseType(StatusCodes.Status401Unauthorized)]
 	public async Task<IActionResult> Login(LoginReqDto loginReqDto)
 	{
-		var user = await _userManager.FindByEmailAsync(loginReqDto.Email);
+		User? user = await _userManager.FindByEmailAsync(loginReqDto.Email);
 		if (user == null)
 			return Unauthorized();
 
-		var result = await _signInManager.CheckPasswordSignInAsync(user, loginReqDto.Password, false);
+		Microsoft.AspNetCore.Identity.SignInResult result = await _signInManager.CheckPasswordSignInAsync(user, loginReqDto.Password, false);
 		if (result.Succeeded)
 		{
 			SecurityToken token = await GenerateJwtToken(user);
@@ -112,12 +112,12 @@ public class AuthController : ControllerBase
 	[ProducesResponseType(StatusCodes.Status400BadRequest, Type = typeof(ValidationProblemDetails))]
 	public async Task<IActionResult> Logout(LogoutReqDto logoutReqDto)
 	{
-		var refreshToken = await _context.RefreshTokens.FirstOrDefaultAsync(t => t.Token == logoutReqDto.RefreshToken);
+		RefreshToken? refreshToken = await _context.RefreshTokens.FirstOrDefaultAsync(t => t.Token == logoutReqDto.RefreshToken);
 		if (refreshToken == null)
 			return CustomBadRequest(nameof(logoutReqDto.RefreshToken), new List<string>() { "Refresh token not found" });
 
-		_context.RefreshTokens.Remove(refreshToken);
-		await _context.SaveChangesAsync();
+		_ = _context.RefreshTokens.Remove(refreshToken);
+		_ = await _context.SaveChangesAsync();
 		return Ok();
 	}
 
@@ -128,17 +128,18 @@ public class AuthController : ControllerBase
 	[ProducesResponseType(StatusCodes.Status400BadRequest, Type = typeof(ValidationProblemDetails))]
 	public async Task<IActionResult> RefreshToken(RefreshTokenReqDto refreshTokenReqDto)
 	{
-		var savedRefreshToken = await _context.RefreshTokens.FirstOrDefaultAsync(x => x.Token == refreshTokenReqDto.RefreshToken);
+		RefreshToken? savedRefreshToken = await _context.RefreshTokens.FirstOrDefaultAsync(x => x.Token == refreshTokenReqDto.RefreshToken);
 		if (savedRefreshToken == null)
 			return Unauthorized();
-		var user = await _userManager.FindByIdAsync(savedRefreshToken.UserId);
+		// implentation of refresh token login that checks if the refresh token has been revoked previously
+		User? user = await _userManager.FindByIdAsync(savedRefreshToken.UserId);
 		if (user == null)
 			return Unauthorized();
 
-		var jwtTokenHandler = new JwtSecurityTokenHandler();
+		JwtSecurityTokenHandler jwtTokenHandler = new();
 		try
 		{
-			jwtTokenHandler.ValidateToken(refreshTokenReqDto.AccessToken, _tokenValidationParameters, out SecurityToken validatedToken);
+			_ = jwtTokenHandler.ValidateToken(refreshTokenReqDto.AccessToken, _tokenValidationParameters, out SecurityToken validatedToken);
 			if (validatedToken is JwtSecurityToken jwtSecurityToken)
 			{
 				if (jwtSecurityToken.ValidTo > DateTime.UtcNow)
@@ -211,7 +212,7 @@ public class AuthController : ControllerBase
 	private async Task<SecurityToken> GenerateJwtToken(User user)
 	{
 
-		var claims = new List<Claim>
+		List<Claim> claims = new()
 		{
 			new Claim(ClaimTypes.NameIdentifier, user.Id),
 			new Claim(ClaimTypes.Name, user.UserName!),
@@ -221,24 +222,24 @@ public class AuthController : ControllerBase
 			new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
 		};
 
-		var roles = await _userManager.GetRolesAsync(user);
-		foreach (var role in roles)
+		IList<string> roles = await _userManager.GetRolesAsync(user);
+		foreach (string role in roles)
 		{
 			claims.Add(new Claim(ClaimTypes.Role, role));
 		}
 
-		var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_config.GetSection("JWT:Secret").Value!));
-		var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha512Signature);
-		var tokenDescriptor = new SecurityTokenDescriptor
+		SymmetricSecurityKey key = new(Encoding.UTF8.GetBytes(_config.GetSection("JWT:Secret").Value!));
+		SigningCredentials creds = new(key, SecurityAlgorithms.HmacSha512Signature);
+		SecurityTokenDescriptor tokenDescriptor = new()
 		{
 			Subject = new ClaimsIdentity(claims),
-			Expires = DateTime.UtcNow.AddMinutes(30),
+			Expires = DateTime.UtcNow.AddMinutes(60),
 			SigningCredentials = creds,
 			Issuer = _config.GetSection("JWT:Issuer").Value,
 			Audience = _config.GetSection("JWT:Audience").Value
 		};
-		var tokenHandler = new JwtSecurityTokenHandler();
-		var securityToken = tokenHandler.CreateToken(tokenDescriptor);
+		JwtSecurityTokenHandler tokenHandler = new();
+		SecurityToken securityToken = tokenHandler.CreateToken(tokenDescriptor);
 		return securityToken;
 	}
 
@@ -250,7 +251,7 @@ public class AuthController : ControllerBase
 	/// <returns></returns>
 	private async Task<RefreshToken> GenerateAndStoreRefreshToken(SecurityToken securityToken, User user)
 	{
-		var refreshToken = new RefreshToken
+		RefreshToken refreshToken = new()
 		{
 			Token = Guid.NewGuid().ToString() + "-" + Guid.NewGuid().ToString(),
 			JwtId = securityToken.Id,
@@ -259,15 +260,15 @@ public class AuthController : ControllerBase
 			ExpiryDate = DateTime.Now.AddMonths(6),
 			IsRevoked = false,
 		};
-		await _context.RefreshTokens.AddAsync(refreshToken);
-		await _context.SaveChangesAsync();
+		_ = await _context.RefreshTokens.AddAsync(refreshToken);
+		_ = await _context.SaveChangesAsync();
 
 		return refreshToken;
 	}
 
 	private BadRequestObjectResult CustomBadRequest(string key, List<string> values)
 	{
-		var errors = new Dictionary<string, string[]>
+		Dictionary<string, string[]> errors = new()
 		{
 			{ key, values.ToArray() }
 		};
@@ -275,9 +276,9 @@ public class AuthController : ControllerBase
 	}
 }
 
-class JWTTokenResDto
+internal class JWTTokenResDto
 {
-public required string AccessToken { get; set; }
+	public required string AccessToken { get; set; }
 	public required string RefreshToken { get; set; }
 	public required DateTime Expiration { get; set; }
 }

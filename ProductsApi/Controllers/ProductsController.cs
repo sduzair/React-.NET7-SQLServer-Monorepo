@@ -27,9 +27,13 @@ public class ProductsController : ControllerBase
 	[AllowAnonymous]
 	[SwaggerOperation(Summary = "Get all products")]
 	[ProducesResponseType(StatusCodes.Status200OK, Type = typeof(List<GetProductResDto>))]
-	public async Task<IActionResult> GetProducts()
+	public async Task<IActionResult> GetProducts(int limit = 10, string sort = "id", int sortDirection = 1, int skip = 0, string? category = "all")
 	{
-		List<GetProductResDto> getProductsResDto = await _context.Products
+		// 	.ToListAsync();
+		IQueryable<GetProductResDto> getProductsResDto = _context.Products
+			.Where(p => category!.Equals("all", StringComparison.Ordinal) || p.Category == category)
+			.Skip(skip)
+			.Take(limit)
 			.Select(p =>
 				new GetProductResDto
 				{
@@ -46,10 +50,29 @@ public class ProductsController : ControllerBase
 					DateCreated = p.DateCreated,
 					DateUpdated = p.DateUpdated,
 				}
-			)
-			.ToListAsync();
+			);
+
+		// sort switch
+		// {
+		// 	"id" => getProducts.OrderBy(p => p.ProductId),
+		// 	// "title" => p.Title,
+		// 	// "price" => p.Price,
+		// 	// "rating" => p.Rating,
+		// 	// "stock" => p.Stock,
+		// 	// "dateCreated" => p.DateCreated,
+		// 	// "dateUpdated" => p.DateUpdated,
+		// 	// _ => p.ProductId,
+		// };
+		if (sort.Equals("id", StringComparison.Ordinal)) getProductsResDto = sortDirection == 1 ? getProductsResDto.OrderBy(p => p.ProductId) : getProductsResDto.OrderByDescending(p => p.ProductId);
+		if (sort.Equals("price", StringComparison.Ordinal)) getProductsResDto = sortDirection == 1 ? getProductsResDto.OrderBy(p => p.Price) : getProductsResDto.OrderByDescending(p => p.Price);
+		if (sort.Equals("rating", StringComparison.Ordinal)) getProductsResDto = sortDirection == 1 ? getProductsResDto.OrderBy(p => p.Rating) : getProductsResDto.OrderByDescending(p => p.Rating);
+
+
+
+
+
 		//List<GetProductResDto> getProductResDto = _mapper.Map<List<GetProductResDto>>(products);
-		return Ok(getProductsResDto);
+		return Ok(await getProductsResDto.ToListAsync());
 	}
 
 	[HttpGet("{id}")]
